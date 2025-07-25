@@ -1274,8 +1274,10 @@ class SettingsPage(QWidget):
 
 # Клас за страница "Изглед на живо"
 class LiveViewPage(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, camera_manager, parent=None):  # ДОБАВЕН camera_manager аргумент
         super().__init__(parent)
+        self.camera_manager = camera_manager  # Съхраняваме camera_manager
+        self.current_camera = None  # За да следим коя камера е избрана и стриймва
         self.setStyleSheet(f"""
             QWidget {{
                 background-color: {PANEL_BG_COLOR};
@@ -1333,6 +1335,9 @@ class LiveViewPage(QWidget):
             }}
         """)
         self.init_ui()
+        self.timer = QTimer(self)  # Таймер за опресняване на видеото
+        self.timer.timeout.connect(self.update_video_frame)
+        self.timer.start(30)  # Опресняване на всеки 30 ms (около 33 FPS)
 
     def init_ui(self):
         layout = QVBoxLayout(self)
@@ -1347,8 +1352,7 @@ class LiveViewPage(QWidget):
         camera_selection_layout = QHBoxLayout()
         self.camera_combo = QComboBox()
         self.camera_combo.setPlaceholderText("Изберете камера")
-        # Примерни камери
-        self.camera_combo.addItems(["Камера 1", "Камера 2", "Камера 3"])
+        self.camera_combo.currentIndexChanged.connect(self.on_camera_combo_selected)  # Свързваме сигнала
         camera_selection_layout.addWidget(self.camera_combo)
         camera_selection_layout.addStretch(1)
         layout.addLayout(camera_selection_layout)
@@ -1375,24 +1379,15 @@ class LiveViewPage(QWidget):
         view_mode_layout.addStretch(1)
         layout.addLayout(view_mode_layout)
 
-        # Видео дисплей (примерно изображение)
+        # Видео дисплей
         self.video_display_label = QLabel()
         self.video_display_label.setAlignment(Qt.AlignCenter)
         self.video_display_label.setStyleSheet(f"background-color: #000000; border: 1px solid {BORDER_COLOR};")
-
-        # Зареждане на примерно изображение
-        if os.path.exists("icons/camera_placeholder.png"):
-            pixmap = QPixmap("icons/camera_placeholder.png")
-            # Пропорционално оразмеряване, за да пасне
-            scaled_pixmap = pixmap.scaled(640, 480, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            self.video_display_label.setPixmap(scaled_pixmap)
-        else:
-            self.video_display_label.setText("Няма видео поток")
-            self.video_display_label.setFont(QFont("Segoe UI", 20, QFont.Bold))
+        self.video_display_label.setText("Изберете камера за преглед")  # Показва съобщение по подразбиране
 
         layout.addWidget(self.video_display_label)
 
-        # Контроли за видеото
+        # Контроли за видеото (остават същите)
         video_controls_layout = QHBoxLayout()
         video_controls_layout.addStretch(1)
 
@@ -1425,7 +1420,7 @@ class LiveViewPage(QWidget):
         zoom_out_button.setIconSize(QSize(32, 32))
         zoom_out_button.setFixedSize(40, 40)
         zoom_out_button.setStyleSheet(
-            "QPushButton { border: none; background-color: transparent; } QPushButton:hover { background-color: #555555; border-radius: 20px; }")
+            "QPushButton { border: none; background-color: transparent; } QPushButton:hover { background-color: #555555; border-radius: 20px; } }")
         video_controls_layout.addWidget(zoom_out_button)
 
         video_controls_layout.addStretch(1)
@@ -1440,9 +1435,78 @@ class LiveViewPage(QWidget):
         layout.addLayout(video_controls_layout)
         layout.addStretch(1)
 
+    def load_cameras_to_combo(self):  # НОВ МЕТОД: Зарежда камери в ComboBox
+        self.camera_combo.clear()
+        self.camera_combo.addItem("Изберете камера")  # Първа опция
+        for camera in self.camera_manager.get_all_cameras():
+            self.camera_combo.addItem(camera.name)
+
+    def on_camera_combo_selected(self, index):  # НОВ МЕТОД: Когато се избере камера от ComboBox
+        if index == 0:  # Избрана е опцията "Изберете камера"
+            self.stop_current_stream()
+            self.video_display_label.setText("Изберете камера за преглед")
+            return
+
+        camera_name = self.camera_combo.currentText()
+        selected_camera_obj = self.camera_manager.get_camera(camera_name)
+
+        if selected_camera_obj:
+            self.stop_current_stream()  # Спира текущия стрийм, ако има такъв
+            self.current_camera = selected_camera_obj
+            self.current_camera.start_stream()
+            print(f"[{self.current_camera.name}] Attempted to start stream.")
+            self.video_display_label.setText(f"Свързване към {self.current_camera.name}...")
+        else:
+            self.video_display_label.setText("Камерата не е намерена.")
+            self.stop_current_stream()
+
+    def stop_current_stream(self):  # НОВ МЕТОД: Спира текущия стрийм
+        if self.current_camera:
+            self.current_camera.stop_stream()
+            print(f"[{self.current_camera.name}] Stream stopped by UI.")
+            self.current_camera = None
+
+    def update_video_frame(self):  # НОВ МЕТОД: Опреснява видео кадъра
+        if self.current_camera and self.current_camera._is_streaming:
+            frame = self.current_camera.get_frame()
+            if frame is not None:
+                # Конвертиране на OpenCV кадър към QPixmap
+                h, w, ch = frame.shape
+                bytes_per_line = ch * w
+                qt_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_BGR888)
+                pixmap = QPixmap.fromImage(qt_image)
+
+                # Мащабиране на изображението, за да пасне на QLabel
+                scaled_pixmap = pixmap.scaled(self.video_display_label.size(), Qt.KeepAspectRatio,
+                                              Qt.SmoothTransformation)
+                self.video_display_label.setPixmap(scaled_pixmap)
+
+                # Ако има движение, актуализирайте статуса на камерата на "Активна"
+                if self.current_camera.status == "Неактивна":
+                    self.current_camera.status = "Активна"
+                    self.camera_manager.update_camera(self.current_camera)
+                    # Може да се наложи да излъчите сигнал, за да обновите CamerasPage
+                    # self.cameras_page.load_cameras_to_table() # Това би забавило, ако се вика често
+                    print(f"[{self.current_camera.name}] Status updated to Active.")
+            else:
+                self.video_display_label.setText(f"Няма сигнал от {self.current_camera.name}")
+                self.current_camera.status = "Неактивна"  # Ако няма кадри, маркираме като неактивна
+                # self.camera_manager.update_camera(self.current_camera) # Избягвайте чести записвания
+        else:
+            self.video_display_label.setText("Изберете камера за преглед")
+            # Уверете се, че няма остатъчни пиксели от предишен кадър
+            # self.video_display_label.clear() # Може да е прекалено агресивно
+
     def take_snapshot(self):
-        # Тук ще се вземе моментна снимка от видео потока
-        QMessageBox.information(self, "Моментна снимка", "Моментна снимка е запазена.")
+        if self.current_camera and self.current_camera._latest_frame is not None:
+            camera_recordings_dir = Path(RECORDINGS_DIR) / self.current_camera.name
+            camera_recordings_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = camera_recordings_dir / f"snapshot_{timestamp}.jpg"
+            cv2.imwrite(str(filename), self.current_camera._latest_frame)
+            QMessageBox.information(self, "Моментна снимка", f"Моментна снимка е запазена: {filename.name}")
+        else:
+            QMessageBox.warning(self, "Моментна снимка", "Няма активен видео поток за моментна снимка.")
 
 
 # Клас за диалог за добавяне/редактиране на камера
