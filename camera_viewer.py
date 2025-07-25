@@ -117,7 +117,65 @@ class Camera:
         # Опитваме да инициализираме OpenCV стрийма.
         # Ако rtsp_url не е зададен, използваме IP и порт (което е по-лоша практика)
         stream_url = self.rtsp_url if self.rtsp_url else f"rtsp://{self.ip_address}:{self.port}/"
+        print(f"[{self.name}] [Stream Thread] Attempting to open stream from URL: {stream_url}")
+
         self._cap = cv2.VideoCapture(stream_url)
+
+        if self._cap.isOpened():
+            self._is_streaming = True
+            print(f"[{self.name}] [Stream Thread] Stream successfully opened. _is_streaming set to True.")
+            self.initialize_onvif() # Инициализиране на ONVIF, ако е необходимо
+            print(f"[{self.name}] [Stream Thread] ONVIF initialized (if applicable). Entering frame reading loop.")
+        else:
+            self._is_streaming = False
+            print(f"[{self.name}] [Stream Thread] FAILED to open stream from {stream_url}. _is_streaming set to False.")
+
+            print(f"[{self.name}] [Stream Thread] Retrying stream connection in 5 seconds...")
+            time.sleep(5)
+            self._cap = cv2.VideoCapture(stream_url)
+            if self._cap.isOpened():
+                self._is_streaming = True
+                print(f"[{self.name}] [Stream Thread] Stream successfully reconnected after retry.")
+                self.initialize_onvif()
+                print(
+                    f"[{self.name}] [Stream Thread] ONVIF re-initialized (if applicable). Entering frame reading loop.")
+            else:
+                print(f"[{self.name}] [Stream Thread] FAILED to reconnect after retry. Stopping stream thread.")
+                return  # Излизаме от нишката, ако не успеем да се свържем
+
+        while self._is_streaming and self._cap.isOpened():
+            ret, frame = self._cap.read()
+
+            if not ret:
+                print(f"[{self.name}] [Stream Thread] Failed to read frame (ret=False). Attempting reconnect...")
+                self._cap.release()
+                time.sleep(2)  # Кратка пауза преди опит за повторно свързване
+                self._cap = cv2.VideoCapture(stream_url)
+                if not self._cap.isOpened():
+                    print(f"[{self.name}] [Stream Thread] FAILED to reconnect after frame read error. Stopping stream.")
+                    self._is_streaming = False
+                continue  # Продължаваме към следващата итерация на цикъла
+
+                self._handle_motion_detection(frame)
+
+                with self._frame_lock:
+                    self._latest_frame = frame
+                    # Проверка дали записът е активен
+                    if (self._is_manual_recording or self._is_motion_recording) and self._video_writer:
+                        try:
+                            self._video_writer.write(frame)
+                        except Exception as e:
+                            print(f"[{self.name}] [Stream Thread] Error writing frame to video writer: {e}")
+                            self.stop_recording()  # Спираме записа при грешка
+
+            # Когато цикълът приключи (т.е. _is_streaming е False или _cap не е отворен)
+            print(f"[{self.name}] [Stream Thread] Exiting main loop. Releasing resources.")
+            if self._cap and self._cap.isOpened():
+                self._cap.release()
+                print(f"[{self.name}] [Stream Thread] VideoCapture released.")
+            self.stop_recording()
+            self._is_streaming = False  # Уверете се, че флагът е False при изход
+            print(f"[{self.name}] Stream thread finished for camera {self.name}.")
 
         if not self._cap.isOpened():
             print(f"[{self.name}] Failed to open stream from {stream_url}")
