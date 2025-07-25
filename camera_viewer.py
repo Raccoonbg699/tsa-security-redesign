@@ -17,15 +17,12 @@ from PyQt5.QtGui import QFont, QImage, QPixmap, QPainter, QPen, QIcon, QIntValid
 
 import json
 from pathlib import Path
-from ipaddress import ip_network, ip_address, IPv4Network  # ДОБАВЕН: За мрежово сканиране
-import time  # ДОБАВЕН: За sleep в Camera стрийма
+from ipaddress import ip_network, ip_address, IPv4Network
+import time
 
-# ДОБАВЕНИ:
 import threading
 from datetime import datetime
 import socket
-
-# КРАЙ НА ДОБАВКИТЕ
 
 # Опит за импортиране на ONVIF библиотека. Ако я няма, PTZ няма да работи.
 try:
@@ -41,7 +38,7 @@ from user_management_dialog import UserManagementDialog
 from user_manager import UserManager
 
 
-# Клас Camera (вече преместен по-нагоре във файла)
+# Клас Camera
 class Camera:
     def __init__(self, name, ip_address, port, status="Неактивна", rtsp_url=""):
         self.name = name
@@ -59,7 +56,7 @@ class Camera:
         self._frame_lock = threading.Lock()
         self._latest_frame = None
         self._stream_thread = None
-        self._is_streaming = False
+        self._is_streaming = False  # Флаг за текущо стриймване
         self._onvif_cam = None
         self._ptz_service = None
         self._media_profile = None
@@ -114,8 +111,6 @@ class Camera:
         self.stop_recording()
 
     def _run_stream(self):
-        # Опитваме да инициализираме OpenCV стрийма.
-        # Ако rtsp_url не е зададен, използваме IP и порт (което е по-лоша практика)
         stream_url = self.rtsp_url if self.rtsp_url else f"rtsp://{self.ip_address}:{self.port}/"
         print(f"[{self.name}] [Stream Thread] Attempting to open stream from URL: {stream_url}")
 
@@ -124,12 +119,11 @@ class Camera:
         if self._cap.isOpened():
             self._is_streaming = True
             print(f"[{self.name}] [Stream Thread] Stream successfully opened. _is_streaming set to True.")
-            self.initialize_onvif() # Инициализиране на ONVIF, ако е необходимо
+            self.initialize_onvif()
             print(f"[{self.name}] [Stream Thread] ONVIF initialized (if applicable). Entering frame reading loop.")
         else:
             self._is_streaming = False
             print(f"[{self.name}] [Stream Thread] FAILED to open stream from {stream_url}. _is_streaming set to False.")
-
             print(f"[{self.name}] [Stream Thread] Retrying stream connection in 5 seconds...")
             time.sleep(5)
             self._cap = cv2.VideoCapture(stream_url)
@@ -141,7 +135,7 @@ class Camera:
                     f"[{self.name}] [Stream Thread] ONVIF re-initialized (if applicable). Entering frame reading loop.")
             else:
                 print(f"[{self.name}] [Stream Thread] FAILED to reconnect after retry. Stopping stream thread.")
-                return  # Излизаме от нишката, ако не успеем да се свържем
+                return
 
         while self._is_streaming and self._cap.isOpened():
             ret, frame = self._cap.read()
@@ -149,50 +143,10 @@ class Camera:
             if not ret:
                 print(f"[{self.name}] [Stream Thread] Failed to read frame (ret=False). Attempting reconnect...")
                 self._cap.release()
-                time.sleep(2)  # Кратка пауза преди опит за повторно свързване
+                time.sleep(2)
                 self._cap = cv2.VideoCapture(stream_url)
                 if not self._cap.isOpened():
                     print(f"[{self.name}] [Stream Thread] FAILED to reconnect after frame read error. Stopping stream.")
-                    self._is_streaming = False
-                continue  # Продължаваме към следващата итерация на цикъла
-
-                self._handle_motion_detection(frame)
-
-                with self._frame_lock:
-                    self._latest_frame = frame
-                    # Проверка дали записът е активен
-                    if (self._is_manual_recording or self._is_motion_recording) and self._video_writer:
-                        try:
-                            self._video_writer.write(frame)
-                        except Exception as e:
-                            print(f"[{self.name}] [Stream Thread] Error writing frame to video writer: {e}")
-                            self.stop_recording()  # Спираме записа при грешка
-
-            # Когато цикълът приключи (т.е. _is_streaming е False или _cap не е отворен)
-            print(f"[{self.name}] [Stream Thread] Exiting main loop. Releasing resources.")
-            if self._cap and self._cap.isOpened():
-                self._cap.release()
-                print(f"[{self.name}] [Stream Thread] VideoCapture released.")
-            self.stop_recording()
-            self._is_streaming = False  # Уверете се, че флагът е False при изход
-            print(f"[{self.name}] Stream thread finished for camera {self.name}.")
-
-        if not self._cap.isOpened():
-            print(f"[{self.name}] Failed to open stream from {stream_url}")
-            self._is_streaming = False
-            return
-
-        self.initialize_onvif()  # Инициализиране на ONVIF, ако е необходимо
-
-        while self._is_streaming and self._cap.isOpened():
-            ret, frame = self._cap.read()
-            if not ret:
-                print(f"[{self.name}] Lost stream from {stream_url}. Attempting to reconnect...")
-                self._cap.release()
-                time.sleep(5)  # Изчакайте преди повторно свързване
-                self._cap = cv2.VideoCapture(stream_url)
-                if not self._cap.isOpened():
-                    print(f"[{self.name}] Failed to reconnect to {stream_url}. Stopping stream.")
                     self._is_streaming = False
                 continue
 
@@ -201,30 +155,33 @@ class Camera:
             with self._frame_lock:
                 self._latest_frame = frame
                 if (self._is_manual_recording or self._is_motion_recording) and self._video_writer:
-                    self._video_writer.write(frame)
+                    try:
+                        self._video_writer.write(frame)
+                    except Exception as e:
+                        print(f"[{self.name}] [Stream Thread] Error writing frame to video writer: {e}")
+                        self.stop_recording()
 
+        print(f"[{self.name}] [Stream Thread] Exiting main loop. Releasing resources.")
         if self._cap and self._cap.isOpened():
             self._cap.release()
+            print(f"[{self.name}] [Stream Thread] VideoCapture released.")
         self.stop_recording()
         self._is_streaming = False
-        print(f"[{self.name}] Stream stopped.")
+        print(f"[{self.name}] Stream thread finished for camera {self.name}.")
 
     def get_frame(self):
         with self._frame_lock:
             return self._latest_frame
 
     def initialize_onvif(self):
-        if not ONVIF_ENABLED or not self.ip_address:  # ONVIF изисква IP адрес
+        if not ONVIF_ENABLED or not self.ip_address:
             print(f"[{self.name}] ONVIF disabled or no IP address. PTZ will not work.")
             return
         try:
-            # ONVIF обикновено работи на HTTP/S портове (80/443) или специфични ONVIF портове (5000/8000),
-            # а не RTSP порта. Може да се наложи да се конфигурира.
-            # Засега, използваме порт 80 като стандартен опит.
             self._onvif_cam = ONVIFCamera(self.ip_address, 80, "username", "password")  # Placeholder
             self._ptz_service = self._onvif_cam.create_ptz_service()
             profiles = self._onvif_cam.get_profiles()
-            self._media_profile = profiles[0]  # Взимаме първия профил
+            self._media_profile = profiles[0]
             print(f"[{self.name}] ONVIF Initialized Successfully.")
         except Exception as e:
             print(f"[{self.name}] ONVIF Initialization Failed: {e}")
@@ -254,7 +211,6 @@ class Camera:
         if self._video_writer or not self._latest_frame:
             return False
 
-        # Създаване на папка за камерата, ако не съществува
         camera_recordings_dir = Path(RECORDINGS_DIR) / self.name
         camera_recordings_dir.mkdir(parents=True, exist_ok=True)
 
@@ -264,10 +220,9 @@ class Camera:
 
         try:
             height, width, _ = self._latest_frame.shape
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # MP4 codec
-            # Опит за получаване на FPS от потока или използване на 25 като резервен
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
             fps = self._cap.get(cv2.CAP_PROP_FPS) if self._cap and self._cap.isOpened() else 25.0
-            if fps <= 0: fps = 25.0  # Санитарна проверка
+            if fps <= 0: fps = 25.0
 
             self._video_writer = cv2.VideoWriter(str(filename), fourcc, fps, (width, height))
             if not self._video_writer.isOpened():
@@ -313,10 +268,8 @@ class Camera:
 
         motion_pixels = 0
         if self.detection_zones:
-            # Сумиране на пикселите за движение във всички дефинирани зони
             for zone_rect in self.detection_zones:
                 x, y, w, h = zone_rect.x(), zone_rect.y(), zone_rect.width(), zone_rect.height()
-                # Уверете се, че зоните са в границите на кадъра
                 h_frame, w_frame = frame.shape[:2]
                 x = max(0, min(x, w_frame - 1))
                 y = max(0, min(y, h_frame - 1))
@@ -329,14 +282,13 @@ class Camera:
         else:
             motion_pixels = cv2.countNonZero(thresh)
 
-        # Конвертиране на чувствителността от текст към числова стойност
         sensitivity_threshold = 0
         if self.motion_sensitivity == "Ниска":
-            sensitivity_threshold = 5000  # Повече пиксели
+            sensitivity_threshold = 5000
         elif self.motion_sensitivity == "Средна":
             sensitivity_threshold = 2000
         elif self.motion_sensitivity == "Висока":
-            sensitivity_threshold = 500  # По-малко пиксели
+            sensitivity_threshold = 500
 
         if motion_pixels > sensitivity_threshold:
             self._last_motion_time = time.time()
@@ -344,20 +296,20 @@ class Camera:
                 print(f"[{self.name}] Motion detected. Starting motion recording.")
                 self.start_recording(is_motion=True)
         else:
-            if self._is_motion_recording and (time.time() - self._last_motion_time > 5):  # 5 секунди post-motion запис
+            if self._is_motion_recording and (time.time() - self._last_motion_time > 5):
                 self._is_motion_recording = False
-                if not self._is_manual_recording:  # Спира записа само ако няма ръчен запис
+                if not self._is_manual_recording:
                     self.stop_recording()
                 print(f"[{self.name}] Motion stopped.")
 
         self._prev_frame_gray = gray
 
 
-# Клас NetworkScanner (вече преместен по-нагоре във файла)
+# Клас NetworkScanner
 class NetworkScanner(QObject):
-    camera_found = pyqtSignal(str)  # Излъчва IP адрес
-    scan_progress = pyqtSignal(int)  # Прогрес в проценти
-    scan_finished = pyqtSignal(str)  # Съобщение за край на сканирането
+    camera_found = pyqtSignal(str)
+    scan_progress = pyqtSignal(int)
+    scan_finished = pyqtSignal(str)
 
     def __init__(self, subnet):
         super().__init__()
@@ -376,11 +328,7 @@ class NetworkScanner(QObject):
                 return
 
             ip_str = str(ip)
-            # Проверка на RTSP порт (554)
             try:
-                # Използваме по-дълъг таймаут, за да избегнем "Too many open files"
-                # или други мрежови грешки при много бързо сканиране.
-                # За пълно сканиране, може да се наложи да се контролира скоростта.
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
                     sock.settimeout(0.5)
                     if sock.connect_ex((ip_str, 554)) == 0:
@@ -388,7 +336,7 @@ class NetworkScanner(QObject):
                         print(f"Camera found at: {ip_str}")
             except Exception as e:
                 print(f"Error checking {ip_str}: {e}")
-                pass  # Просто продължаваме към следващия IP
+                pass
 
             progress = int(((i + 1) / total_hosts) * 100)
             self.scan_progress.emit(progress)
@@ -412,26 +360,24 @@ PANEL_BG_COLOR = "#3A3A3A"  # Фон на панелите (по-светъл о
 FIELD_BG_COLOR = "#3A3A3A"  # Фон на входните полета
 BUTTON_HOVER_COLOR = "#E67E00"  # По-тъмен оранжев при hover
 BUTTON_PRESSED_COLOR = "#CC7000"  # Още по-тъмен оранжев при натискане
-BG_COLOR = "#2C2C2C"  # ДОБАВЕН: Основен фонов цвят, използван в диалозите
+BG_COLOR = "#2C2C2C"  # Основен фонов цвят, използван в диалозите
 
 # Икони (пътища, ако са локални)
-# Уверете се, че тези икони съществуват в папка 'icons' във вашата директория на проекта.
-# Ако ги нямате, програмата ще работи, но бутоните няма да имат икони.
 ICON_PATH_DASHBOARD = "icons/dashboard.png"
 ICON_PATH_CAMERAS = "icons/camera.png"
 ICON_PATH_RECORDS = "icons/records.png"
 ICON_PATH_ALARMS = "icons/alarm.png"
-ICON_PATH_ACTIONS = "icons/actions.png"  # Този път вече не е нужен, ако бутонът "Действия" е премахнат, но може да остане
+ICON_PATH_ACTIONS = "icons/actions.png"
 ICON_PATH_SETTINGS = "icons/settings.png"
 ICON_PATH_LIVE_VIEW = "icons/live_view.png"
-ICON_PATH_USER = "icons/user.png"  # Този път вече не е нужен, ако бутонът "Потребител" е премахнат
-ICON_PATH_BELL = "icons/bell.png"  # Този път вече не е нужен, ако бутонът "Известия" е премахнат
+ICON_PATH_USER = "icons/user.png"
+ICON_PATH_BELL = "icons/bell.png"
 ICON_PATH_SNAPSHOT = "icons/snapshot.png"
 ICON_PATH_REWIND = "icons/rewind.png"
 ICON_PATH_FORWARD = "icons/forward.png"
 ICON_PATH_ZOOM_IN = "icons/zoom_in.png"
 ICON_PATH_ZOOM_OUT = "icons/zoom_out.png"
-ICON_PATH_ARROW_DOWN = "icons/arrow_down.png"  # За QComboBox стрелките
+ICON_PATH_ARROW_DOWN = "icons/arrow_down.png"
 
 # Проверка и създаване на папка за записи
 RECORDINGS_DIR = "recordings"
@@ -462,7 +408,6 @@ class CameraManager:
     def add_camera(self, camera):
         if camera.name in self.cameras:
             return False, "Камера с това име вече съществува."
-        # Проверка за уникален IP адрес
         if any(c.ip_address == camera.ip_address and c.port == camera.port for c in self.cameras.values()):
             return False, f"Камера с IP адрес {camera.ip_address}:{camera.port} вече съществува."
 
@@ -501,7 +446,6 @@ class CameraManager:
 
 # Клас за странично меню
 class SideMenu(QWidget):
-    # Дефиниране на сигнал за промяна на страницата
     page_changed = pyqtSignal(str)
 
     def __init__(self, parent=None):
@@ -519,7 +463,7 @@ class SideMenu(QWidget):
                 text-align: left;
                 font-size: 16px;
                 font-weight: bold;
-                border-radius: 0px; /* Премахване на закръгляне */
+                border-radius: 0px;
             }}
             QPushButton:hover {{
                 background-color: {HOVER_COLOR};
@@ -551,7 +495,7 @@ class SideMenu(QWidget):
             "Камери": ICON_PATH_CAMERAS,
             "Записи": ICON_PATH_RECORDS,
             "Аларми": ICON_PATH_ALARMS,
-            # "Действия": ICON_PATH_ACTIONS, # Този ред е премахнат, както обсъдихме
+            # "Действия": ICON_PATH_ACTIONS,
             "Настройки": ICON_PATH_SETTINGS,
             "Изглед на живо": ICON_PATH_LIVE_VIEW,
         }
@@ -559,7 +503,7 @@ class SideMenu(QWidget):
         for text, icon_path in button_data.items():
             button = QPushButton(text)
             button.setCheckable(True)
-            button.setAutoExclusive(True)  # Само един бутон може да е избран
+            button.setAutoExclusive(True)
             if os.path.exists(icon_path):
                 button.setIcon(QIcon(icon_path))
                 button.setIconSize(QSize(24, 24))
@@ -567,7 +511,7 @@ class SideMenu(QWidget):
             self.buttons[text] = button
             layout.addWidget(button)
 
-        layout.addStretch(1)  # Разпъва останалото пространство
+        layout.addStretch(1)
 
         # Изберете "Камери" по подразбиране
         self.buttons["Камери"].setChecked(True)
@@ -711,7 +655,7 @@ class CamerasPage(QWidget):
 
         # Списък с камери (TableWidget)
         main_layout.addWidget(QLabel("Списък с камери"))
-        self.camera_table = QListWidget()  # Променено на QListWidget
+        self.camera_table = QListWidget()
         self.camera_table.setFixedHeight(250)
         self.camera_table.itemClicked.connect(self.on_camera_selected)
         main_layout.addWidget(self.camera_table)
@@ -765,10 +709,10 @@ class CamerasPage(QWidget):
         zones_layout.addStretch(1)
         main_layout.addLayout(zones_layout)
 
-        main_layout.addStretch(1)  # Разпъва останалото пространство
+        main_layout.addStretch(1)
 
         self.selected_camera = None
-        self.update_settings_ui_state(False)  # Деактивирайте настройките по подразбиране
+        self.update_settings_ui_state(False)
 
     def load_cameras_to_table(self):
         self.camera_table.clear()
@@ -816,7 +760,7 @@ class CamerasPage(QWidget):
             list_item.setSizeHint(item_widget.sizeHint())
             self.camera_table.addItem(list_item)
             self.camera_table.setItemWidget(list_item, item_widget)
-            list_item.setData(Qt.UserRole, camera.name)  # Съхраняваме името на камерата
+            list_item.setData(Qt.UserRole, camera.name)
 
     def filter_cameras(self, text):
         search_text = text.lower()
@@ -849,8 +793,6 @@ class CamerasPage(QWidget):
             self.selected_camera.motion_detection_enabled = self.motion_detection_toggle.isChecked()
             self.selected_camera.motion_sensitivity = self.sensitivity_combo.currentText()
             self.camera_manager.update_camera(self.selected_camera)
-            # Може да добавите QMesageBox.information за потвърждение или да актуализирате UI по друг начин
-            # print(f"Настройките за {self.selected_camera.name} са актуализирани.")
 
     def on_edit_zones_clicked(self):
         if self.selected_camera:
@@ -915,16 +857,16 @@ class RecordsPage(QWidget):
         # Модел за файлова система
         self.model = QFileSystemModel()
         self.model.setRootPath(RECORDINGS_DIR)
-        self.model.setFilter(QDir.Files | QDir.NoDotAndDotDot | QDir.Dirs)  # Показва файлове и директории
+        self.model.setFilter(QDir.Files | QDir.NoDotAndDotDot | QDir.Dirs)
 
         self.tree = QTreeView()
         self.tree.setModel(self.model)
         self.tree.setRootIndex(self.model.index(RECORDINGS_DIR))
-        self.tree.setColumnHidden(1, True)  # Скрива колона "Размер"
-        self.tree.setColumnHidden(2, True)  # Скрива колона "Тип"
-        self.tree.setColumnHidden(3, True)  # Скрива колона "Дата на модификация"
+        self.tree.setColumnHidden(1, True)
+        self.tree.setColumnHidden(2, True)
+        self.tree.setColumnHidden(3, True)
         self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.tree.doubleClicked.connect(self.open_selected_file)  # Отвори файл при двоен клик
+        self.tree.doubleClicked.connect(self.open_selected_file)
         layout.addWidget(self.tree)
 
         # Бутони за управление на записи
@@ -952,19 +894,7 @@ class RecordsPage(QWidget):
             QMessageBox.warning(self, "Възпроизвеждане", "Моля, изберете файл, а не папка.")
             return
 
-        # Тук трябва да интегрирате видео плейър
         QMessageBox.information(self, "Възпроизвеждане", f"Възпроизвеждане на: {os.path.basename(file_path)}")
-        # Пример: Можете да използвате cv2.VideoCapture за възпроизвеждане
-        # cap = cv2.VideoCapture(file_path)
-        # while cap.isOpened():
-        #     ret, frame = cap.read()
-        #     if not ret:
-        #         break
-        #     cv2.imshow('Recording Playback', frame)
-        #     if cv2.waitKey(25) & 0xFF == ord('q'):
-        #         break
-        # cap.release()
-        # cv2.destroyAllWindows()
 
     def delete_selected_record(self):
         index = self.tree.currentIndex()
@@ -984,18 +914,17 @@ class RecordsPage(QWidget):
                     os.remove(file_path)
                     QMessageBox.information(self, "Изтриване", "Файлът е изтрит успешно.")
                 elif os.path.isdir(file_path):
-                    # Изтриване на директория и цялото й съдържание
                     import shutil
                     shutil.rmtree(file_path)
                     QMessageBox.information(self, "Изтриване", "Папката и съдържанието й са изтрити успешно.")
-                self.model.layoutChanged.emit()  # Опресняване на изгледа
+                self.model.layoutChanged.emit()
             except Exception as e:
                 QMessageBox.critical(self, "Грешка при изтриване", f"Неуспешно изтриване: {e}")
 
     def open_selected_file(self, index):
         file_path = self.model.filePath(index)
         if os.path.isfile(file_path):
-            self.play_selected_record()  # Извикваме функцията за възпроизвеждане
+            self.play_selected_record()
 
 
 # Клас за страница "Аларми"
@@ -1075,7 +1004,6 @@ class AlarmsPage(QWidget):
 
     def load_sample_alarms(self):
         self.alarm_list_widget.clear()
-        # Тук бихте заредили реални аларми от база данни или файл
         sample_alarms = [
             "2023-10-26 10:30:00 - Движение засечено (Камера 1)",
             "2023-10-26 09:15:20 - Изгубена връзка (Камера 3)",
@@ -1172,7 +1100,7 @@ class SettingsPage(QWidget):
         record_duration_layout.addWidget(record_duration_sublabel)
         self.record_duration_combo = QComboBox()
         self.record_duration_combo.addItems(["15 минути", "30 минути", "1 час", "2 часа", "Неограничено"])
-        self.record_duration_combo.setCurrentText("1 час")  # Примерна стойност
+        self.record_duration_combo.setCurrentText("1 час")
         record_duration_layout.addWidget(self.record_duration_combo)
         record_duration_layout.addStretch(1)
         layout.addLayout(record_duration_layout)
@@ -1184,7 +1112,7 @@ class SettingsPage(QWidget):
         record_quality_layout.addWidget(record_quality_sublabel)
         self.record_quality_combo = QComboBox()
         self.record_quality_combo.addItems(["Ниско", "Средно", "Високо", "Full HD"])
-        self.record_quality_combo.setCurrentText("Високо")  # Примерна стойност
+        self.record_quality_combo.setCurrentText("Високо")
         record_quality_layout.addWidget(self.record_quality_combo)
         record_quality_layout.addStretch(1)
         layout.addLayout(record_quality_layout)
@@ -1195,14 +1123,13 @@ class SettingsPage(QWidget):
         user_management_layout.addWidget(QLabel("Управление на потребители"))
         user_management_sublabel = QLabel("Управление на потребителски профили")
         user_management_layout.addWidget(user_management_sublabel)
-        self.manage_users_button = QPushButton(">")  # Стрелка
-        self.manage_users_button.setFixedSize(30, 30)  # Малък бутон
+        self.manage_users_button = QPushButton(">")
+        self.manage_users_button.setFixedSize(30, 30)
         self.manage_users_button.clicked.connect(self.open_user_management)
         user_management_layout.addWidget(self.manage_users_button)
         user_management_layout.addStretch(1)
         layout.addLayout(user_management_layout)
 
-        # Деактивирайте бутона, ако потребителят не е администратор
         if not self.is_admin:
             self.manage_users_button.setEnabled(False)
             self.manage_users_button.setToolTip("Само администратори могат да управляват потребители.")
@@ -1216,7 +1143,7 @@ class SettingsPage(QWidget):
         motion_notification_sublabel = QLabel("Настройки за известия при движение")
         motion_notification_layout.addWidget(motion_notification_sublabel)
         self.motion_notification_toggle = QCheckBox()
-        self.motion_notification_toggle.setChecked(True)  # Примерна стойност
+        self.motion_notification_toggle.setChecked(True)
         motion_notification_layout.addWidget(self.motion_notification_toggle)
         motion_notification_layout.addStretch(1)
         layout.addLayout(motion_notification_layout)
@@ -1229,7 +1156,7 @@ class SettingsPage(QWidget):
         storage_layout.addWidget(QLabel("Съхранение на записи"))
         storage_sublabel = QLabel("Настройки за съхранение на записи")
         storage_layout.addWidget(storage_sublabel)
-        self.storage_location_label = QLabel("Локално")  # Примерна стойност
+        self.storage_location_label = QLabel("Локално")
         storage_layout.addWidget(self.storage_location_label)
         storage_layout.addStretch(1)
         layout.addLayout(storage_layout)
@@ -1239,7 +1166,7 @@ class SettingsPage(QWidget):
         about_layout.addWidget(QLabel("Информация за софтуера"))
         about_sublabel = QLabel("Информация за версията на софтуера")
         about_layout.addWidget(about_sublabel)
-        self.version_label = QLabel("v1.2.3")  # Примерна стойност
+        self.version_label = QLabel("v1.2.3")
         about_layout.addWidget(self.version_label)
         about_layout.addStretch(1)
         layout.addLayout(about_layout)
@@ -1248,20 +1175,14 @@ class SettingsPage(QWidget):
 
     def open_user_management(self):
         dialog = UserManagementDialog(current_username=self.current_username, parent=self)
-        dialog.user_updated.connect(self.on_user_manager_update)  # Свързваме сигнала
+        dialog.user_updated.connect(self.on_user_manager_update)
         dialog.exec_()
 
     def on_user_manager_update(self):
-        # Тази функция може да се използва за опресняване на UI, ако е необходимо,
-        # например ако текущият потребител е променил правата си
         print("Потребителските данни са актуализирани.")
-        # Ако текущият потребител промени правата си, може да се наложи рестарт или презареждане
-        # на главния прозорец, за да се отразят промените в достъпа до менюта.
-        # Засега просто ще презаредим страницата с настройки, за да се актуализира бутона.
         self.update_manage_users_button_state()
 
     def update_manage_users_button_state(self):
-        # Опреснява състоянието на бутона "Управление на потребители"
         user_manager = UserManager()
         current_user_obj = user_manager.get_user(self.current_username)
         if current_user_obj and current_user_obj.is_admin:
@@ -1362,10 +1283,10 @@ class LiveViewPage(QWidget):
         self.single_view_button = QPushButton("Single View")
         self.single_view_button.setCheckable(True)
         self.single_view_button.setChecked(True)
-        self.single_view_button.setStyleSheet("QPushButton.control-button")  # Прилагане на стил
+        self.single_view_button.setStyleSheet("QPushButton.control-button")
         self.multi_view_button = QPushButton("Multi View")
         self.multi_view_button.setCheckable(True)
-        self.multi_view_button.setStyleSheet("QPushButton.control-button")  # Прилагане на стил
+        self.multi_view_button.setStyleSheet("QPushButton.control-button")
 
         # Групиране на бутоните, за да може само един да е активен
         self.view_mode_group = QWidget()
@@ -1383,7 +1304,7 @@ class LiveViewPage(QWidget):
         self.video_display_label = QLabel()
         self.video_display_label.setAlignment(Qt.AlignCenter)
         self.video_display_label.setStyleSheet(f"background-color: #000000; border: 1px solid {BORDER_COLOR};")
-        self.video_display_label.setText("Изберете камера за преглед")  # Показва съобщение по подразбиране
+        self.video_display_label.setText("Изберете камера за преглед")
 
         layout.addWidget(self.video_display_label)
 
@@ -1470,32 +1391,30 @@ class LiveViewPage(QWidget):
         if self.current_camera and self.current_camera._is_streaming:
             frame = self.current_camera.get_frame()
             if frame is not None:
-                # Конвертиране на OpenCV кадър към QPixmap
                 h, w, ch = frame.shape
                 bytes_per_line = ch * w
                 qt_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_BGR888)
                 pixmap = QPixmap.fromImage(qt_image)
 
-                # Мащабиране на изображението, за да пасне на QLabel
                 scaled_pixmap = pixmap.scaled(self.video_display_label.size(), Qt.KeepAspectRatio,
                                               Qt.SmoothTransformation)
                 self.video_display_label.setPixmap(scaled_pixmap)
 
-                # Ако има движение, актуализирайте статуса на камерата на "Активна"
                 if self.current_camera.status == "Неактивна":
                     self.current_camera.status = "Активна"
                     self.camera_manager.update_camera(self.current_camera)
-                    # Може да се наложи да излъчите сигнал, за да обновите CamerasPage
-                    # self.cameras_page.load_cameras_to_table() # Това би забавило, ако се вика често
                     print(f"[{self.current_camera.name}] Status updated to Active.")
             else:
                 self.video_display_label.setText(f"Няма сигнал от {self.current_camera.name}")
-                self.current_camera.status = "Неактивна"  # Ако няма кадри, маркираме като неактивна
-                # self.camera_manager.update_camera(self.current_camera) # Избягвайте чести записвания
+                if self.current_camera.status == "Активна":  # Променя статуса само ако е бил активен
+                    self.current_camera.status = "Неактивна"
+                    self.camera_manager.update_camera(self.current_camera)
+                    print(f"[{self.current_camera.name}] Status updated to Inactive due to no frame.")
+
         else:
-            self.video_display_label.setText("Изберете камера за преглед")
-            # Уверете се, че няма остатъчни пиксели от предишен кадър
-            # self.video_display_label.clear() # Може да е прекалено агресивно
+            # Избягваме да изчистваме постоянно, за да не мига текстът
+            if self.video_display_label.text() != "Изберете камера за преглед":
+                self.video_display_label.setText("Изберете камера за преглед")
 
     def take_snapshot(self):
         if self.current_camera and self.current_camera._latest_frame is not None:
@@ -1571,10 +1490,10 @@ class CameraDialog(QDialog):
 
         self.port_input = QLineEdit()
         self.port_input.setPlaceholderText("Порт (напр. 8080)")
-        self.port_input.setValidator(QIntValidator(1, 65535, self))  # Валидатор за порт
+        self.port_input.setValidator(QIntValidator(1, 65535, self))
         form_layout.addRow("Порт:", self.port_input)
 
-        self.rtsp_url_input = QLineEdit()  # НОВО: Поле за RTSP URL
+        self.rtsp_url_input = QLineEdit()
         self.rtsp_url_input.setPlaceholderText("RTSP URL (напр. rtsp://192.168.1.100:554/stream1)")
         form_layout.addRow("RTSP URL:", self.rtsp_url_input)
 
@@ -1589,14 +1508,14 @@ class CameraDialog(QDialog):
         self.name_input.setText(self.camera.name)
         self.ip_input.setText(self.camera.ip_address)
         self.port_input.setText(str(self.camera.port))
-        self.rtsp_url_input.setText(self.camera.rtsp_url)  # НОВО: Зареждане на RTSP URL
-        self.name_input.setEnabled(False)  # Не позволяваме промяна на името при редакция
+        self.rtsp_url_input.setText(self.camera.rtsp_url)
+        self.name_input.setEnabled(False)
 
     def get_camera_data(self):
         name = self.name_input.text().strip()
         ip_address = self.ip_input.text().strip()
         port = self.port_input.text().strip()
-        rtsp_url = self.rtsp_url_input.text().strip()  # НОВО: Взимане на RTSP URL
+        rtsp_url = self.rtsp_url_input.text().strip()
 
         if not name or not ip_address or not port:
             QMessageBox.warning(self, "Грешка", "Моля, попълнете всички задължителни полета (Име, IP, Порт).")
@@ -1610,7 +1529,6 @@ class CameraDialog(QDialog):
             QMessageBox.warning(self, "Грешка", "Невалиден номер на порт. Моля, въведете число между 1 и 65535.")
             return None
 
-        # Проверка за валиден IP адрес (опростена)
         try:
             import ipaddress
             ipaddress.ip_address(ip_address)
@@ -1618,19 +1536,18 @@ class CameraDialog(QDialog):
             QMessageBox.warning(self, "Грешка", "Невалиден IP адрес.")
             return None
 
-        # Опционална проверка за RTSP URL
         if rtsp_url and not (
                 rtsp_url.startswith("rtsp://") or rtsp_url.startswith("http://") or rtsp_url.startswith("https://")):
             QMessageBox.warning(self, "Грешка", "RTSP URL трябва да започва с 'rtsp://', 'http://' или 'https://'.")
             return None
 
-        if self.camera:  # Редакция
+        if self.camera:
             self.camera.ip_address = ip_address
             self.camera.port = port
-            self.camera.rtsp_url = rtsp_url  # НОВО: Запазване на RTSP URL
+            self.camera.rtsp_url = rtsp_url
             return self.camera
-        else:  # Добавяне
-            return Camera(name, ip_address, port, rtsp_url=rtsp_url)  # НОВО: Подаване на RTSP URL
+        else:
+            return Camera(name, ip_address, port, rtsp_url=rtsp_url)
 
 
 # Клас за диалог за редактиране на зони за детекция
@@ -1674,7 +1591,6 @@ class DetectionZoneDialog(QDialog):
         if os.path.exists("icons/camera_placeholder.png"):
             self.original_pixmap = QPixmap("icons/camera_placeholder.png")
         else:
-            # Създайте празно изображение, ако няма placeholder
             img = QImage(640, 480, QImage.Format_RGB32)
             img.fill(Qt.black)
             self.original_pixmap = QPixmap.fromImage(img)
@@ -1718,7 +1634,7 @@ class DetectionZoneDialog(QDialog):
     def draw_existing_zones(self):
         self.current_pixmap = self.original_pixmap.copy()
         painter = QPainter(self.current_pixmap)
-        painter.setPen(QPen(Qt.red, 2, Qt.SolidLine))  # Червена рамка
+        painter.setPen(QPen(Qt.red, 2, Qt.SolidLine))
         painter.setBrush(Qt.NoBrush)
 
         for zone in self.camera.detection_zones:
@@ -1744,20 +1660,18 @@ class DetectionZoneDialog(QDialog):
             rect = QRect(self.start_point, self.end_point).normalized()
             if rect.width() > 0 and rect.height() > 0:
                 self.camera.detection_zones.append(rect)
-                self.draw_existing_zones()  # Прерисува всички зони, включително новата
+                self.draw_existing_zones()
 
     def draw_current_rectangle(self):
         temp_pixmap = self.original_pixmap.copy()
         painter = QPainter(temp_pixmap)
-        painter.setPen(QPen(Qt.blue, 2, Qt.DotLine))  # Синя пунктирана линия за текущото рисуване
+        painter.setPen(QPen(Qt.blue, 2, Qt.DotLine))
         painter.setBrush(Qt.NoBrush)
 
-        # Рисуване на съществуващите зони
         painter.setPen(QPen(Qt.red, 2, Qt.SolidLine))
         for zone in self.camera.detection_zones:
             painter.drawRect(zone)
 
-        # Рисуване на текущата зона
         painter.setPen(QPen(Qt.blue, 2, Qt.DotLine))
         rect = QRect(self.start_point, self.end_point).normalized()
         painter.drawRect(rect)
@@ -1766,8 +1680,6 @@ class DetectionZoneDialog(QDialog):
         self.image_label.setPixmap(temp_pixmap)
 
     def add_zone(self):
-        # Зоната вече е добавена при mouseRelease, този бутон може да се използва за
-        # ръчно въвеждане на координати или за потвърждение, ако има сложна логика
         QMessageBox.information(self, "Добавяне на зона", "Моля, маркирайте зоната с мишката.")
 
     def clear_all_zones(self):
@@ -1776,14 +1688,14 @@ class DetectionZoneDialog(QDialog):
                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.Yes:
             self.camera.detection_zones.clear()
-            self.draw_existing_zones()  # Прерисува без зони
+            self.draw_existing_zones()
 
 
 # Основен прозорец на приложението
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Tsa-Security")
+        self.setWindowTitle("SecureView - Система за видеонаблюдение")
         self.setGeometry(100, 100, 1200, 800)
         self.setStyleSheet(f"""
             QMainWindow {{
@@ -1826,7 +1738,7 @@ class MainWindow(QMainWindow):
             #userButton, #notificationButton {{
                 background-color: {ACCENT_COLOR};
                 border: none;
-                border-radius: 18px; /* За да стане кръгъл */
+                border-radius: 18px;
                 width: 36px;
                 height: 36px;
             }}
@@ -1849,7 +1761,7 @@ class MainWindow(QMainWindow):
             self.is_admin = login_dialog.is_admin
             self.init_ui()
         else:
-            sys.exit(0)  # Изход от приложението, ако входът е неуспешен или отменен
+            sys.exit(0)
 
     def init_ui(self):
         central_widget = QWidget()
@@ -1861,7 +1773,7 @@ class MainWindow(QMainWindow):
         # Странично меню
         self.side_menu = SideMenu()
         self.side_menu.page_changed.connect(self.change_page)
-        main_layout.addWidget(self.side_menu, 1)  # 1/5 от ширината
+        main_layout.addWidget(self.side_menu, 1)
 
         # Основно съдържание
         content_layout = QVBoxLayout()
@@ -1879,23 +1791,6 @@ class MainWindow(QMainWindow):
         self.header_label.setObjectName("headerLabel")
         header_layout.addWidget(self.header_label)
         header_layout.addStretch(1)
-
-        # Бутон за известия (премахнат, както обсъдихме)
-        # notification_button = QPushButton()
-        # notification_button.setObjectName("notificationButton")
-        # notification_button.setIcon(QIcon(ICON_PATH_BELL))
-        # notification_button.setIconSize(QSize(24, 24))
-        # notification_button.setToolTip("Известия")
-        # header_layout.addWidget(notification_button)
-
-        # Бутон за потребителски профил (премахнат, както обсъдихме)
-        # user_button = QPushButton()
-        # user_button.setObjectName("userButton")
-        # user_button.setIcon(QIcon(ICON_PATH_USER))
-        # user_button.setIconSize(QSize(24, 24))
-        # user_button.setToolTip(f"Влязъл като: {self.current_username} ({'Админ' if self.is_admin else 'Потребител'})")
-        # user_button.clicked.connect(self.show_user_context_menu) # show_user_context_menu също може да се премахне
-        # header_layout.addWidget(user_button)
 
         content_layout.addWidget(header_widget)
 
@@ -1917,7 +1812,7 @@ class MainWindow(QMainWindow):
         self.pages_widget.addWidget(self.alarms_page)
 
         # Действия - може да е същата като аларми или отделна
-        self.actions_page = QWidget()  # Примерна празна страница
+        self.actions_page = QWidget()
         self.actions_page_layout = QVBoxLayout(self.actions_page)
         self.actions_page_layout.addWidget(QLabel("Страница за действия"))
         self.pages_widget.addWidget(self.actions_page)
@@ -1925,30 +1820,30 @@ class MainWindow(QMainWindow):
         self.settings_page = SettingsPage(self.current_username, self.is_admin)
         self.pages_widget.addWidget(self.settings_page)
 
-        self.live_view_page = LiveViewPage()
+        self.live_view_page = LiveViewPage(self.camera_manager)  # ПОДАВАМЕ camera_manager
         self.pages_widget.addWidget(self.live_view_page)
 
-        main_layout.addLayout(content_layout, 4)  # 4/5 от ширината
+        main_layout.addLayout(content_layout, 4)
 
-        self.change_page("Камери")  # Показване на начална страница
+        self.change_page("Камери")
 
     def change_page(self, page_name):
         self.header_label.setText(page_name)
         if page_name == "Камери":
             self.pages_widget.setCurrentWidget(self.cameras_page)
-            self.cameras_page.load_cameras_to_table()  # Опресняване на списъка с камери
+            self.cameras_page.load_cameras_to_table()
         elif page_name == "Записи":
             self.pages_widget.setCurrentWidget(self.records_page)
         elif page_name == "Аларми":
             self.pages_widget.setCurrentWidget(self.alarms_page)
-        elif page_name == "Действия":  # Въпреки че бутонът е премахнат, страницата все още съществува
+        elif page_name == "Действия":
             self.pages_widget.setCurrentWidget(self.actions_page)
         elif page_name == "Настройки":
             self.pages_widget.setCurrentWidget(self.settings_page)
-            # Опресняване на състоянието на бутона за потребители
             self.settings_page.update_manage_users_button_state()
         elif page_name == "Изглед на живо":
             self.pages_widget.setCurrentWidget(self.live_view_page)
+            self.live_view_page.load_cameras_to_combo()  # Зарежда камери в ComboBox на LiveViewPage
 
     def open_add_camera_dialog(self):
         dialog = CameraDialog(parent=self)
@@ -1963,13 +1858,11 @@ class MainWindow(QMainWindow):
                     QMessageBox.critical(self, "Грешка", message)
 
     def scan_network(self):
-        # Взимане на IP адреса на текущия компютър, за да определим подмрежата
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))  # Свързва се с външен адрес, за да получи локалния IP
+            s.connect(("8.8.8.8", 80))
             local_ip = s.getsockname()[0]
             s.close()
-            # Предполагаме /24 подмрежа (напр. 192.168.1.0/24)
             subnet = IPv4Network(f"{local_ip}/24", strict=False)
         except Exception as e:
             QMessageBox.critical(self, "Грешка при сканиране", f"Не може да се определи локалната подмрежа: {e}")
@@ -1978,35 +1871,29 @@ class MainWindow(QMainWindow):
         self.progress_dialog = QProgressDialog("Сканиране на вашата мрежа за камери...", "Отмяна", 0, 100, self)
         self.progress_dialog.setWindowTitle("Сканиране на мрежата")
         self.progress_dialog.setWindowModality(Qt.WindowModal)
-        self.progress_dialog.setAutoClose(True)  # Автоматично затваряне при 100%
+        self.progress_dialog.setAutoClose(True)
 
-        # Създаване на нишка за скенера
         self.scanner_thread = QThread()
         self.scanner = NetworkScanner(subnet)
         self.scanner.moveToThread(self.scanner_thread)
 
-        # Свързване на сигнали
         self.progress_dialog.canceled.connect(self.scanner.cancel)
         self.scanner.scan_progress.connect(self.progress_dialog.setValue)
         self.scanner.camera_found.connect(self.add_scanned_camera)
         self.scanner.scan_finished.connect(self.on_scan_finished)
 
-        # Стартиране на нишката
         self.scanner_thread.started.connect(self.scanner.run)
 
         self.progress_dialog.show()
         self.scanner_thread.start()
 
     def add_scanned_camera(self, ip_address):
-        # Проверява дали камера с този IP адрес вече е добавена
         existing_camera = next((c for c in self.camera_manager.get_all_cameras() if c.ip_address == ip_address), None)
         if existing_camera:
             print(f"Камера с IP {ip_address} вече съществува. Пропускане.")
             return
 
-        # Добавяне на намерена камера
         camera_name = f"Камера_{ip_address.replace('.', '_')}"
-        # RTSP URL е примерна, може да се наложи ръчна корекция от потребителя
         rtsp_url = f"rtsp://{ip_address}:554/stream1"
         new_camera = Camera(name=camera_name, ip_address=ip_address, port=554, status="Неактивна", rtsp_url=rtsp_url)
 
@@ -2014,7 +1901,7 @@ class MainWindow(QMainWindow):
         if success:
             QMessageBox.information(self, "Камера намерена",
                                     f"Намерена нова камера: {camera_name} ({ip_address}). Добавена е към списъка.")
-            self.cameras_page.load_cameras_to_table()  # Опресняване на списъка в UI
+            self.cameras_page.load_cameras_to_table()
         else:
             print(f"Грешка при добавяне на сканирана камера {ip_address}: {message}")
 
@@ -2022,74 +1909,36 @@ class MainWindow(QMainWindow):
         self.progress_dialog.close()
         QMessageBox.information(self, "Сканиране на мрежата", message)
 
-        # Почистване на нишката
         if self.scanner_thread:
             self.scanner_thread.quit()
             self.scanner_thread.wait()
         self.scanner_thread = None
         self.scanner = None
 
-    # Методът show_user_context_menu вече не е свързан с бутон, така че може да бъде премахнат,
-    # ако не се използва другаде.
-    # def show_user_context_menu(self):
-    #     menu = QMenu(self)
+    def open_detection_zone_dialog(self, camera):  # ДОБАВЕН МЕТОД
+        dialog = DetectionZoneDialog(camera, parent=self)
+        if dialog.exec_() == QDialog.Accepted:
+            self.camera_manager.update_camera(camera)
+            QMessageBox.information(self, "Зони за детекция", f"Зоните за {camera.name} са запазени.")
 
-    #     user_info_action = menu.addAction(f"Влязъл като: {self.current_username}")
-    #     user_info_action.setEnabled(False)
-    #     menu.addSeparator()
-    #     logout_action = menu.addAction("Изход")
-    #     logout_action.triggered.connect(self.logout)
-    #     menu.exec_(self.sender().mapToGlobal(self.sender().rect().bottomLeft()))
-
-    def show_live_view_for_camera(self, camera):  # <-- ТОЗИ МЕТОД Е ДОБАВЕН/КОРИГИРАН
-        # Превключване към страницата за изглед на живо и избор на камера
+    def show_live_view_for_camera(self, camera):  # КОРИГИРАН МЕТОД
         self.side_menu.buttons["Изглед на живо"].setChecked(True)
         self.change_page("Изглед на живо")
 
-        # Актуализирайте QComboBox на LiveViewPage
-        # Първо изчистете старите елементи, за да не се повтарят, ако камерата е сменена
-        self.live_view_page.camera_combo.clear()
-
-        # Добавете текущата избрана камера към ComboBox-а
-        self.live_view_page.camera_combo.addItem(camera.name)
-        self.live_view_page.camera_combo.setCurrentText(camera.name)  # Избираме я
-
-        # Тук трябва да инициирате стрийма на камерата в LiveViewPage
-        # Засега, просто съобщение:
-        QMessageBox.information(self, "Изглед на живо", f"Зареждане на изглед от {camera.name}...")
+        self.live_view_page.load_cameras_to_combo()
+        self.live_view_page.camera_combo.setCurrentText(camera.name)
 
     def logout(self):
         reply = QMessageBox.question(self, "Изход", "Сигурни ли сте, че искате да излезете?",
                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.Yes:
-            self.close()  # Затваряне на главния прозорец
-            os.execl(sys.executable, sys.executable, *sys.argv)  # Рестартира текущия скрипт
-
-    def open_detection_zone_dialog(self, camera):  # <-- ДОБАВЕТЕ ТОЗИ МЕТОД
-        dialog = DetectionZoneDialog(camera, parent=self)
-        if dialog.exec_() == QDialog.Accepted:
-            # Зонирането е запазено директно в обекта на камерата в диалога
-            self.camera_manager.update_camera(camera)  # Запазваме промените във файла
-            QMessageBox.information(self, "Зони за детекция", f"Зоните за {camera.name} са запазени.")
-
-    def logout(self):
-        reply = QMessageBox.question(self, "Изход", "Сигурни ли сте, че искате да излезете?",
-                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if reply == QMessageBox.Yes:
-            self.close()  # Затваряне на главния прозорец
-            os.execl(sys.executable, sys.executable, *sys.argv)  # Рестартира текущия скрипт
+            self.close()
+            os.execl(sys.executable, sys.executable, *sys.argv)
 
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
 
-    # Уверете се, че папка 'icons' съществува и съдържа иконите
-    # Ако ги нямате, можете да ги изтеглите или да ги премахнете от кода
-    # Примерни икони: camera.png, user.png, bell.png, dashboard.png, records.png, alarm.png, actions.png, settings.png, live_view.png
-    # arrow_down.png, camera_placeholder.png, snapshot.png, rewind.png, forward.png, zoom_in.png, zoom_out.png
-    # Можете да използвате FontAwesome или други библиотеки за икони вместо файлове.
-
-    # Създайте папка 'icons', ако не съществува
     if not os.path.exists("icons"):
         os.makedirs("icons")
         print("Създадена е папка 'icons'. Моля, поставете иконите вътре.")

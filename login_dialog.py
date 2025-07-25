@@ -15,7 +15,7 @@ BORDER_COLOR = "#505050" # Цвят на рамката
 class LoginDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Tsa-Security - Вход в системата")
+        self.setWindowTitle("SecureView - Вход в акаунта")
         self.setFixedSize(600, 400) # Фиксиран размер на прозореца за вход
         self.setStyleSheet(f"""
             QDialog {{
