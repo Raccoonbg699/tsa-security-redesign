@@ -44,29 +44,27 @@ class Camera:
         self.name = name
         self.ip_address = ip_address
         self.port = port
-        self.status = status  # Активна/Неактивна
-        self.rtsp_url = rtsp_url  # Добавен RTSP URL
+        self.status = status
+        self.rtsp_url = rtsp_url
         self.is_recording = False
         self.motion_detection_enabled = False
-        self.motion_sensitivity = "Средна"  # Ниска, Средна, Висока
-        self.detection_zones = []  # Списък от QRect обекти
+        self.motion_sensitivity = "Средна"
+        self.detection_zones = []
 
-        # За стрийминг и PTZ
         self._cap = None
         self._frame_lock = threading.Lock()
         self._latest_frame = None
         self._stream_thread = None
-        self._is_streaming = False  # Флаг за текущо стриймване
+        self._is_streaming = False
         self._onvif_cam = None
         self._ptz_service = None
         self._media_profile = None
 
-        # Запис
         self._video_writer = None
         self._is_manual_recording = False
         self._is_motion_recording = False
         self._last_motion_time = 0
-        self._prev_frame_gray = None  # За детекция на движение
+        self._prev_frame_gray = None
 
     def to_dict(self):
         return {
@@ -116,11 +114,34 @@ class Camera:
 
         self._cap = cv2.VideoCapture(stream_url)
 
+        # Задаване на параметри за буфериране и резолюция
+        self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Намаляване на буфера
+        # self._cap.set(cv2.CAP_PROP_FPS, 30) # Опит за задаване на FPS
+        # self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280) # Опит за задаване на резолюция
+        # self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720) # Опит за задаване на резолюция
+
         if self._cap.isOpened():
             self._is_streaming = True
             print(f"[{self.name}] [Stream Thread] Stream successfully opened. _is_streaming set to True.")
             self.initialize_onvif()
             print(f"[{self.name}] [Stream Thread] ONVIF initialized (if applicable). Entering frame reading loop.")
+
+            # Принудително четене на няколко кадъра в началото (warm-up)
+            print(f"[{self.name}] [Stream Thread] Warming up stream, reading first few frames...")
+            ret = False
+            for _ in range(5):
+                ret, frame = self._cap.read()
+                if ret:
+                    print(f"[{self.name}] [Stream Thread] Warm-up frame read successfully.")
+                    break
+                time.sleep(0.1)
+
+            if not ret:
+                print(f"[{self.name}] [Stream Thread] FAILED to read warm-up frames. Stopping stream.")
+                self._is_streaming = False
+                if self._cap.isOpened(): self._cap.release()
+                return
+
         else:
             self._is_streaming = False
             print(f"[{self.name}] [Stream Thread] FAILED to open stream from {stream_url}. _is_streaming set to False.")
@@ -178,11 +199,31 @@ class Camera:
             print(f"[{self.name}] ONVIF disabled or no IP address. PTZ will not work.")
             return
         try:
-            self._onvif_cam = ONVIFCamera(self.ip_address, 80, "username", "password")  # Placeholder
+            self._onvif_cam = ONVIFCamera(self.ip_address, 80, "username", "password")  # Placeholder за ONVIF данни
+
+            # Първо тествайте дали ONVIF е свързан:
+            self._onvif_cam.devicemgmt.GetSystemDateAndTime()
+            print(f"[{self.name}] ONVIF connected to device. Creating PTZ service...")
+
             self._ptz_service = self._onvif_cam.create_ptz_service()
-            profiles = self._onvif_cam.get_profiles()
+
+            # НОВО: Получаване на профили от Media Service
+            media_service = self._onvif_cam.create_media_service()
+            profiles = media_service.GetProfiles()  # <- Коригирано извикване
+
+            if not profiles:
+                print(f"[{self.name}] No media profiles found. PTZ will not work.")
+                self._ptz_service = None
+                return
             self._media_profile = profiles[0]
-            print(f"[{self.name}] ONVIF Initialized Successfully.")
+
+            # Проверка дали профилът има PTZ конфигурация
+            if not hasattr(self._media_profile, 'PTZConfiguration') or not self._media_profile.PTZConfiguration:
+                print(f"[{self.name}] No PTZ configuration found in media profile. PTZ not supported.")
+                self._ptz_service = None
+                return
+
+            print(f"[{self.name}] ONVIF Initialized Successfully for PTZ.")
         except Exception as e:
             print(f"[{self.name}] ONVIF Initialization Failed: {e}")
             self._onvif_cam = None
@@ -1305,12 +1346,11 @@ class LiveViewPage(QWidget):
         self.video_display_label.setAlignment(Qt.AlignCenter)
         self.video_display_label.setStyleSheet(f"background-color: #000000; border: 1px solid {BORDER_COLOR};")
         self.video_display_label.setText("Изберете камера за преглед")
+        self.video_display_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.video_display_label.setScaledContents(False)
+        self.video_display_label.setMinimumSize(320, 240)
 
-        # НОВО: Задаване на политика за размер и опция за мащабиране
-        self.video_display_label.setSizePolicy(QSizePolicy.Ignored,
-                                               QSizePolicy.Ignored)  # Игнорира предпочитания размер на лейбъла
-        self.video_display_label.setScaledContents(False)  # Важно: QLabel НЕ ТРЯБВА сам да мащабира съдържанието
-        self.video_display_label.setMinimumSize(320, 240)  # Задайте минимален размер, за да не изчезне
+        layout.addWidget(self.video_display_label)
 
         # Контроли за видеото (остават същите)
         video_controls_layout = QHBoxLayout()
@@ -1360,14 +1400,14 @@ class LiveViewPage(QWidget):
         layout.addLayout(video_controls_layout)
         layout.addStretch(1)
 
-    def load_cameras_to_combo(self):  # НОВ МЕТОД: Зарежда камери в ComboBox
+    def load_cameras_to_combo(self):
         self.camera_combo.clear()
-        self.camera_combo.addItem("Изберете камера")  # Първа опция
+        self.camera_combo.addItem("Изберете камера")
         for camera in self.camera_manager.get_all_cameras():
             self.camera_combo.addItem(camera.name)
 
-    def on_camera_combo_selected(self, index):  # НОВ МЕТОД: Когато се избере камера от ComboBox
-        if index == 0:  # Избрана е опцията "Изберете камера"
+    def on_camera_combo_selected(self, index):
+        if index == 0:
             self.stop_current_stream()
             self.video_display_label.setText("Изберете камера за преглед")
             return
@@ -1376,7 +1416,7 @@ class LiveViewPage(QWidget):
         selected_camera_obj = self.camera_manager.get_camera(camera_name)
 
         if selected_camera_obj:
-            self.stop_current_stream()  # Спира текущия стрийм, ако има такъв
+            self.stop_current_stream()
             self.current_camera = selected_camera_obj
             self.current_camera.start_stream()
             print(f"[{self.current_camera.name}] Attempted to start stream.")
@@ -1385,7 +1425,7 @@ class LiveViewPage(QWidget):
             self.video_display_label.setText("Камерата не е намерена.")
             self.stop_current_stream()
 
-    def stop_current_stream(self):  # НОВ МЕТОД: Спира текущия стрийм
+    def stop_current_stream(self):
         if self.current_camera:
             self.current_camera.stop_stream()
             print(f"[{self.current_camera.name}] Stream stopped by UI.")
@@ -1400,17 +1440,15 @@ class LiveViewPage(QWidget):
                 qt_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_BGR888)
                 pixmap = QPixmap.fromImage(qt_image)
 
-                # ВАЖНО: Вземаме РЕАЛНИЯ размер на QLabel в момента
                 label_width = self.video_display_label.width()
                 label_height = self.video_display_label.height()
 
-                if label_width > 0 and label_height > 0:  # Уверете се, че QLabel има размер
-                    # Мащабиране на изображението, за да пасне на QLabel, запазвайки пропорциите
+                if label_width > 0 and label_height > 0:
                     scaled_pixmap = pixmap.scaled(label_width, label_height, Qt.KeepAspectRatio,
                                                   Qt.SmoothTransformation)
                     self.video_display_label.setPixmap(scaled_pixmap)
                 else:
-                    self.video_display_label.setText("Изчаква се видео...")  # Ако QLabel е 0 размер, покажете съобщение
+                    self.video_display_label.setText("Изчаква се видео...")
 
                 if self.current_camera.status == "Неактивна":
                     self.current_camera.status = "Активна"
@@ -1831,7 +1869,7 @@ class MainWindow(QMainWindow):
         self.settings_page = SettingsPage(self.current_username, self.is_admin)
         self.pages_widget.addWidget(self.settings_page)
 
-        self.live_view_page = LiveViewPage(self.camera_manager)  # ПОДАВАМЕ camera_manager
+        self.live_view_page = LiveViewPage(self.camera_manager)
         self.pages_widget.addWidget(self.live_view_page)
 
         main_layout.addLayout(content_layout, 4)
@@ -1854,7 +1892,7 @@ class MainWindow(QMainWindow):
             self.settings_page.update_manage_users_button_state()
         elif page_name == "Изглед на живо":
             self.pages_widget.setCurrentWidget(self.live_view_page)
-            self.live_view_page.load_cameras_to_combo()  # Зарежда камери в ComboBox на LiveViewPage
+            self.live_view_page.load_cameras_to_combo()
 
     def open_add_camera_dialog(self):
         dialog = CameraDialog(parent=self)
@@ -1926,13 +1964,13 @@ class MainWindow(QMainWindow):
         self.scanner_thread = None
         self.scanner = None
 
-    def open_detection_zone_dialog(self, camera):  # ДОБАВЕН МЕТОД
+    def open_detection_zone_dialog(self, camera):
         dialog = DetectionZoneDialog(camera, parent=self)
         if dialog.exec_() == QDialog.Accepted:
             self.camera_manager.update_camera(camera)
             QMessageBox.information(self, "Зони за детекция", f"Зоните за {camera.name} са запазени.")
 
-    def show_live_view_for_camera(self, camera):  # КОРИГИРАН МЕТОД
+    def show_live_view_for_camera(self, camera):
         self.side_menu.buttons["Изглед на живо"].setChecked(True)
         self.change_page("Изглед на живо")
 
