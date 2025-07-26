@@ -1306,7 +1306,11 @@ class LiveViewPage(QWidget):
         self.video_display_label.setStyleSheet(f"background-color: #000000; border: 1px solid {BORDER_COLOR};")
         self.video_display_label.setText("Изберете камера за преглед")
 
-        layout.addWidget(self.video_display_label)
+        # НОВО: Задаване на политика за размер и опция за мащабиране
+        self.video_display_label.setSizePolicy(QSizePolicy.Ignored,
+                                               QSizePolicy.Ignored)  # Игнорира предпочитания размер на лейбъла
+        self.video_display_label.setScaledContents(False)  # Важно: QLabel НЕ ТРЯБВА сам да мащабира съдържанието
+        self.video_display_label.setMinimumSize(320, 240)  # Задайте минимален размер, за да не изчезне
 
         # Контроли за видеото (остават същите)
         video_controls_layout = QHBoxLayout()
@@ -1387,7 +1391,7 @@ class LiveViewPage(QWidget):
             print(f"[{self.current_camera.name}] Stream stopped by UI.")
             self.current_camera = None
 
-    def update_video_frame(self):  # НОВ МЕТОД: Опреснява видео кадъра
+    def update_video_frame(self):
         if self.current_camera and self.current_camera._is_streaming:
             frame = self.current_camera.get_frame()
             if frame is not None:
@@ -1396,9 +1400,17 @@ class LiveViewPage(QWidget):
                 qt_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_BGR888)
                 pixmap = QPixmap.fromImage(qt_image)
 
-                scaled_pixmap = pixmap.scaled(self.video_display_label.size(), Qt.KeepAspectRatio,
-                                              Qt.SmoothTransformation)
-                self.video_display_label.setPixmap(scaled_pixmap)
+                # ВАЖНО: Вземаме РЕАЛНИЯ размер на QLabel в момента
+                label_width = self.video_display_label.width()
+                label_height = self.video_display_label.height()
+
+                if label_width > 0 and label_height > 0:  # Уверете се, че QLabel има размер
+                    # Мащабиране на изображението, за да пасне на QLabel, запазвайки пропорциите
+                    scaled_pixmap = pixmap.scaled(label_width, label_height, Qt.KeepAspectRatio,
+                                                  Qt.SmoothTransformation)
+                    self.video_display_label.setPixmap(scaled_pixmap)
+                else:
+                    self.video_display_label.setText("Изчаква се видео...")  # Ако QLabel е 0 размер, покажете съобщение
 
                 if self.current_camera.status == "Неактивна":
                     self.current_camera.status = "Активна"
@@ -1406,13 +1418,12 @@ class LiveViewPage(QWidget):
                     print(f"[{self.current_camera.name}] Status updated to Active.")
             else:
                 self.video_display_label.setText(f"Няма сигнал от {self.current_camera.name}")
-                if self.current_camera.status == "Активна":  # Променя статуса само ако е бил активен
+                if self.current_camera.status == "Активна":
                     self.current_camera.status = "Неактивна"
                     self.camera_manager.update_camera(self.current_camera)
                     print(f"[{self.current_camera.name}] Status updated to Inactive due to no frame.")
 
         else:
-            # Избягваме да изчистваме постоянно, за да не мига текстът
             if self.video_display_label.text() != "Изберете камера за преглед":
                 self.video_display_label.setText("Изберете камера за преглед")
 
