@@ -9,7 +9,7 @@ import subprocess
 from datetime import datetime
 import socket
 from pathlib import Path
-from ipaddress import ip_network, ip_address, IPv4Network  # Използваме ipaddress за по-добра валидация
+from ipaddress import ip_network, ip_address, IPv4Network
 
 # За хеширане на пароли
 try:
@@ -18,13 +18,10 @@ except ImportError:
     print("passlib библиотеката не е инсталирана. Моля, инсталирайте я с: pip install passlib")
 
 
-    # Авариен механизъм, ако passlib липсва - НЕ СЕ ИЗПОЛЗВА В ПРОДУКЦИОННА СРЕДА
     class MockHasher:
-        def hash(self, password):
-            return password  # Връща паролата без хеширане (НЕБЕЗОПАСНО!)
+        def hash(self, password): return password
 
-        def verify(self, password, hashed_password):
-            return password == hashed_password  # Проверява паролата директно (НЕБЕЗОПАСНО!)
+        def verify(self, password, hashed_password): return password == hashed_password
 
 
     pbkdf2_sha256 = MockHasher()
@@ -72,7 +69,7 @@ ICON_PATH_LIVE_VIEW = "icons/live_view.png"
 ICON_PATH_USER = "icons/user.png"
 ICON_PATH_BELL = "icons/bell.png"
 ICON_PATH_SNAPSHOT = "icons/snapshot.png"
-ICON_PATH_RECORD = "icons/record.png"  # Добавена икона за Record бутона
+ICON_PATH_RECORD = "icons/record.png"
 ICON_PATH_ARROW_DOWN = "icons/arrow_down.png"
 
 # Проверка и създаване на папка за записи
@@ -105,12 +102,11 @@ class UserManager:
     def __init__(self, users_file="users.json"):
         self.users_file = Path(users_file)
         self.users = self._load_users()
-        # Създаване на default admin, ако няма нито един админ
         if not any(user.is_admin for user in self.users.values()):
             if "admin" not in self.users:
                 self.add_user("admin", "adminpass", is_admin=True)
                 print("Default admin user 'admin' with password 'adminpass' created.")
-            else:  # Ако потребител 'admin' съществува, но не е админ, го правим админ
+            else:
                 user = self.users["admin"]
                 if not user.is_admin:
                     user.is_admin = True
@@ -438,9 +434,9 @@ class UserManagementDialog(QDialog):
         self.selected_user = self.user_manager.get_user(username)
         if self.selected_user:
             self.username_input.setText(self.selected_user.username)
-            self.password_input.clear()  # Изчистваме паролата за сигурност
+            self.password_input.clear()
             self.is_admin_combo.setCurrentIndex(1 if self.selected_user.is_admin else 0)
-            self.username_input.setEnabled(False)  # Не позволяваме промяна на потребителското име
+            self.username_input.setEnabled(False)
 
             self.add_button.setEnabled(False)
             self.update_button.setEnabled(True)
@@ -461,7 +457,7 @@ class UserManagementDialog(QDialog):
         if success:
             QMessageBox.information(self, "Успех", message)
             self.load_users()
-            self.user_updated.emit()  # Излъчва сигнал за актуализация
+            self.user_updated.emit()
         else:
             QMessageBox.critical(self, "Грешка", message)
 
@@ -477,14 +473,14 @@ class UserManagementDialog(QDialog):
         if username == self.current_username and not new_is_admin:
             QMessageBox.critical(self, "Грешка",
                                  "Не можете да премахнете администраторските си права, докато сте влезли.")
-            self.is_admin_combo.setCurrentIndex(1)  # Връщаме обратно админ правата в комбобокса
+            self.is_admin_combo.setCurrentIndex(1)
             return
 
         success, message = self.user_manager.update_user(username, new_password if new_password else None, new_is_admin)
         if success:
             QMessageBox.information(self, "Успех", message)
             self.load_users()
-            self.user_updated.emit()  # Излъчва сигнал за актуализация
+            self.user_updated.emit()
         else:
             QMessageBox.critical(self, "Грешка", message)
 
@@ -513,7 +509,7 @@ class UserManagementDialog(QDialog):
             if success:
                 QMessageBox.information(self, "Успех", message)
                 self.load_users()
-                self.user_updated.emit()  # Излъчва сигнал за актуализация
+                self.user_updated.emit()
             else:
                 QMessageBox.critical(self, "Грешка", message)
 
@@ -566,7 +562,6 @@ class Camera:
             "rtsp_url": self.rtsp_url,
             "motion_detection_enabled": self.motion_detection_enabled,
             "motion_sensitivity": self.motion_sensitivity,
-            # Съхраняваме QRect като списък от [x, y, width, height]
             "detection_zones": [[zone.x(), zone.y(), zone.width(), zone.height()] for zone in self.detection_zones]
         }
 
@@ -576,7 +571,6 @@ class Camera:
                      data.get("status", "Неактивна"), data.get("rtsp_url", ""))
         camera.motion_detection_enabled = data.get("motion_detection_enabled", False)
         camera.motion_sensitivity = data.get("motion_sensitivity", "Средна")
-        # Възстановяваме QRect обекти от списъка
         camera.detection_zones = [QRect(x, y, w, h) for x, y, w, h in data.get("detection_zones", [])]
         return camera
 
@@ -593,40 +587,32 @@ class Camera:
             return
         self._is_streaming = False
         if self._stream_thread:
-            # Изчакваме нишката да приключи
             self._stream_thread.join(timeout=2)
         if self._cap and self._cap.isOpened():
             self._cap.release()
         self._cap = None
         self._latest_frame = None
-        self._prev_frame_gray = None  # Reset previous frame for motion detection
-        self.stop_recording()  # Ensure recording is stopped
+        self._prev_frame_gray = None
+        self.stop_recording()
 
     def _run_stream(self):
-        # Използваме rtsp_url, ако е даден, иначе конструираме стандартен
         stream_url = self.rtsp_url if self.rtsp_url else f"rtsp://{self.ip_address}:{self.port}/"
         print(f"[{self.name}] [Stream Thread] Attempting to open stream from URL: {stream_url}")
 
         self._cap = cv2.VideoCapture(stream_url)
-        # Увеличен буфер за по-плавна работа
         self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 3)
 
         if self._cap.isOpened():
             self._is_streaming = True
             print(f"[{self.name}] [Stream Thread] Stream successfully opened. _is_streaming set to True.")
-            # ONVIF инициализацията може да е бавна, по-добре да се прави асинхронно или веднъж при избор на камера
-            # self.initialize_onvif() # Разумно е това да се извика само веднъж при първоначален избор, не в цикъла.
-            # print(f"[{self.name}] [Stream Thread] ONVIF initialized (if applicable). Entering frame reading loop.")
-
-            # "Загряване" на потока - четене на няколко кадъра, за да се стабилизира
             print(f"[{self.name}] [Stream Thread] Warming up stream, reading first few frames...")
             ret = False
-            for _ in range(5):  # Опит за четене на 5 кадъра
+            for _ in range(5):
                 ret, frame = self._cap.read()
                 if ret:
                     print(f"[{self.name}] [Stream Thread] Warm-up frame read successfully.")
                     break
-                time.sleep(0.1)  # Кратка пауза между опитите
+                time.sleep(0.1)
 
             if not ret:
                 print(f"[{self.name}] [Stream Thread] FAILED to read warm-up frames. Stopping stream.")
@@ -637,40 +623,38 @@ class Camera:
         else:
             self._is_streaming = False
             print(f"[{self.name}] [Stream Thread] FAILED to open stream from {stream_url}. _is_streaming set to False.")
-            # В Production среда, може да добавите логика за автоматично повторно свързване.
-            return  # Излизаме от нишката, ако не може да се отвори стрийм
+            return
 
         while self._is_streaming and self._cap.isOpened():
             ret, frame = self._cap.read()
 
             if not ret:
                 print(f"[{self.name}] [Stream Thread] Failed to read frame (ret=False). Attempting reconnect...")
-                self._cap.release()  # Освобождаваме ресурсите
-                time.sleep(2)  # Кратка пауза преди опит за реконект
-                self._cap = cv2.VideoCapture(stream_url)  # Нов опит за отваряне
+                self._cap.release()
+                time.sleep(2)
+                self._cap = cv2.VideoCapture(stream_url)
                 if not self._cap.isOpened():
                     print(f"[{self.name}] [Stream Thread] FAILED to reconnect after frame read error. Stopping stream.")
-                    self._is_streaming = False  # Спираме, ако реконектът е неуспешен
-                continue  # Продължаваме цикъла, за да опитаме отново или да излезем
+                    self._is_streaming = False
+                continue
 
-            self._handle_motion_detection(frame)  # Обработка на детекция на движение
+            self._handle_motion_detection(frame)
 
-            with self._frame_lock:  # Защита на _latest_frame при достъп от множество нишки
+            with self._frame_lock:
                 self._latest_frame = frame
                 if (self._is_manual_recording or self._is_motion_recording) and self._video_writer:
                     try:
                         self._video_writer.write(frame)
                     except Exception as e:
                         print(f"[{self.name}] [Stream Thread] Error writing frame to video writer: {e}")
-                        self.stop_recording()  # Спиране на записа при грешка
-
-            time.sleep(0.01)  # Дава време на другите нишки и намалява CPU натоварването
+                        self.stop_recording()
+                time.sleep(0.01)
 
         print(f"[{self.name}] [Stream Thread] Exiting main loop. Releasing resources.")
         if self._cap and self._cap.isOpened():
-            self._cap.release()  # Освобождаване на VideoCapture
+            self._cap.release()
             print(f"[{self.name}] [Stream Thread] VideoCapture released.")
-        self.stop_recording()  # Уверете се, че записът е спрян
+        self.stop_recording()
         self._is_streaming = False
         print(f"[{self.name}] Stream thread finished for camera {self.name}.")
 
@@ -683,31 +667,21 @@ class Camera:
             print(f"[{self.name}] ONVIF disabled or no IP address. PTZ will not work.")
             return
         try:
-            # ONVIF Камерите обикновено използват порт 80 или 8080 за HTTP
-            # и имат специфични потребителско име и парола. Моля, коригирайте ги!
             self._onvif_cam = ONVIFCamera(self.ip_address, 80, "admin", "admin")
-            # Може да се наложи да се зададе и WSDL директория, ако не се намира автоматично:
-            # self._onvif_cam = ONVIFCamera(self.ip_address, 80, "admin", "admin", '/path/to/onvif/wsdl')
-
-            self._onvif_cam.devicemgmt.GetSystemDateAndTime()  # Проверка за връзка
+            self._onvif_cam.devicemgmt.GetSystemDateAndTime()
             print(f"[{self.name}] ONVIF connected to device. Creating PTZ service...")
-
             self._ptz_service = self._onvif_cam.create_ptz_service()
-
             media_service = self._onvif_cam.create_media_service()
             profiles = media_service.GetProfiles()
-
             if not profiles:
                 print(f"[{self.name}] No media profiles found. PTZ will not work.")
                 self._ptz_service = None
                 return
             self._media_profile = profiles[0]
-
             if not hasattr(self._media_profile, 'PTZConfiguration') or not self._media_profile.PTZConfiguration:
                 print(f"[{self.name}] No PTZ configuration found in media profile. PTZ not supported.")
                 self._ptz_service = None
                 return
-
             print(f"[{self.name}] ONVIF Initialized Successfully for PTZ.")
         except Exception as e:
             print(f"[{self.name}] ONVIF Initialization Failed: {e}")
@@ -719,11 +693,8 @@ class Camera:
             print(f"[{self.name}] PTZ service not initialized.")
             return
         try:
-            # pan и tilt обикновено са в диапазона [-1, 1], където 1 е максимална скорост.
-            # zoom също е в същия диапазон.
             request = self._ptz_service.create_type('ContinuousMove')
             request.ProfileToken = self._media_profile.token
-            # Scale pan/tilt/zoom to appropriate values if they are not already in ONVIF expected range
             request.Velocity = {'PanTilt': {'x': float(pan), 'y': float(tilt)}, 'Zoom': {'x': float(zoom)}}
             self._ptz_service.ContinuousMove(request)
             print(f"[{self.name}] PTZ move request: Pan={pan}, Tilt={tilt}, Zoom={zoom}")
@@ -759,12 +730,10 @@ class Camera:
 
         try:
             height, width, _ = self._latest_frame.shape
-            # Използвайте 'mp4v' за MP4. Уверете се, че са инсталирани нужните кодеци (например FFMPEG с OpenCV)
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
 
-            # Опитайте да вземете FPS от камерата, иначе задайте default
             fps = self._cap.get(cv2.CAP_PROP_FPS) if self._cap and self._cap.isOpened() else 25.0
-            if fps <= 0: fps = 25.0  # Fallback за FPS ако е 0 или отрицателно
+            if fps <= 0: fps = 25.0
 
             print(f"[{self.name}] [Recording] Detected stream resolution: {width}x{height}, FPS: {fps}")
 
@@ -817,10 +786,8 @@ class Camera:
 
         motion_pixels = 0
         if self.detection_zones:
-            # Мащабиране на зоните спрямо текущия размер на кадъра (ако е променен)
             h_frame, w_frame = frame.shape[:2]
             for zone_rect_orig_coords in self.detection_zones:
-                # zone_rect_orig_coords вече са QRect с оригинални координати
                 x1 = max(0, zone_rect_orig_coords.x())
                 y1 = max(0, zone_rect_orig_coords.y())
                 x2 = min(w_frame, zone_rect_orig_coords.x() + zone_rect_orig_coords.width())
@@ -833,7 +800,6 @@ class Camera:
                     roi_mask = thresh[y1:y2, x1:x2]
                     motion_pixels += cv2.countNonZero(roi_mask)
         else:
-            # Ако няма дефинирани зони, проверява целия кадър
             motion_pixels = cv2.countNonZero(thresh)
 
         sensitivity_threshold = 0
@@ -850,10 +816,9 @@ class Camera:
                 print(f"[{self.name}] Motion detected. Starting motion recording.")
                 self.start_recording(is_motion=True)
         else:
-            if self._is_motion_recording and (
-                    time.time() - self._last_motion_time > 5):  # Записва още 5 секунди след спиране на движението
+            if self._is_motion_recording and (time.time() - self._last_motion_time > 5):
                 self._is_motion_recording = False
-                if not self._is_manual_recording:  # Спира само ако не е ръчен запис
+                if not self._is_manual_recording:
                     self.stop_recording()
                 print(f"[{self.name}] Motion stopped.")
 
@@ -885,12 +850,11 @@ class NetworkScanner(QObject):
             ip_str = str(ip)
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                    sock.settimeout(0.5)  # Кратък таймаут
-                    if sock.connect_ex((ip_str, 554)) == 0:  # Проверка за отворен RTSP порт
+                    sock.settimeout(0.5)
+                    if sock.connect_ex((ip_str, 554)) == 0:
                         self.camera_found.emit(ip_str)
                         print(f"Camera found at: {ip_str}")
             except Exception as e:
-                # print(f"Error checking {ip_str}: {e}") # Премахнато за по-чист изход при нормална работа
                 pass
 
             progress = int(((i + 1) / total_hosts) * 100)
@@ -916,8 +880,8 @@ class CameraManager:
                     data = json.load(f)
                     return {camera_data["name"]: Camera.from_dict(camera_data) for camera_data in data}
                 except json.JSONDecodeError:
-                    return {}  # Връща празен речник при невалиден JSON
-        return {}  # Връща празен речник, ако файлът не съществува
+                    return {}
+        return {}
 
     def _save_cameras(self):
         with open(self.cameras_file, 'w', encoding='utf-8') as f:
@@ -926,7 +890,6 @@ class CameraManager:
     def add_camera(self, camera):
         if camera.name in self.cameras:
             return False, "Камера с това име вече съществува."
-        # Проверка за уникалност на IP:Port комбинация
         if any(c.ip_address == camera.ip_address and c.port == camera.port for c in self.cameras.values()):
             return False, f"Камера с IP адрес {camera.ip_address}:{camera.port} вече съществува."
 
@@ -944,7 +907,6 @@ class CameraManager:
         if camera.name not in self.cameras:
             return False, "Камерата не е намерена."
 
-        # Проверка за дублиране на IP:Port при актуализация
         for existing_cam_name, existing_cam_obj in self.cameras.items():
             if existing_cam_name != camera.name and \
                     existing_cam_obj.ip_address == camera.ip_address and \
@@ -966,7 +928,7 @@ class CameraManager:
         camera = self.get_camera(name)
         if camera:
             camera.status = status
-            self._save_cameras()  # Запазваме промяната в статуса
+            self._save_cameras()
             return True
         return False
 
@@ -1834,12 +1796,13 @@ class LiveViewPage(QWidget):
 
         # ==========================================================
         # Stacked Widget за видео дисплей (Single/Multi View)
-        # Добавяме разтягащ елемент преди и след stacked widget
+        # Уверете се, че няма други елементи между video_display_stack и layout.addStretch(1) по-горе.
         layout.addStretch(1)  # Добавен stretch фактор преди видео дисплея
 
         self.video_display_stack = QStackedWidget()
         self.video_display_stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        layout.addWidget(self.video_display_stack, 1)  # Разтягане на stacked widget
+        # Важно: Задайте stretch factor за StackedWidget, за да му кажете да се разтяга
+        layout.addWidget(self.video_display_stack, 1)
 
         # ---- Single View Display ----
         self.single_video_widget = QWidget()
@@ -1853,6 +1816,7 @@ class LiveViewPage(QWidget):
         self.single_video_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.single_video_label.setMinimumSize(320, 240)
         self.single_video_label.setScaledContents(True)
+        # Важно: Задайте stretch factor и за QLabel в неговия layout
         self.single_video_layout.addWidget(self.single_video_label, 1)
         self.video_display_stack.addWidget(self.single_video_widget)
 
@@ -1892,15 +1856,13 @@ class LiveViewPage(QWidget):
         video_controls_layout.addWidget(self.snapshot_button)
 
         self.record_button = QPushButton("Record")
-        if os.path.exists(ICON_PATH_RECORD):  # Използваме ICON_PATH_RECORD
+        if os.path.exists(ICON_PATH_RECORD):
             self.record_button.setIcon(QIcon(ICON_PATH_RECORD))
             self.record_button.setIconSize(QSize(24, 24))
         self.record_button.clicked.connect(self.toggle_recording)
         video_controls_layout.addWidget(self.record_button)
 
         layout.addLayout(video_controls_layout)
-        # Премахваме последния stretch factor, ако има такъв.
-        # layout.addStretch(1) # Закоментирано, тъй като добавихме два преди и след stacked widget
 
     def set_view_mode(self, mode):
         self.stop_all_streams()
@@ -1953,11 +1915,9 @@ class LiveViewPage(QWidget):
             else:
                 self.record_button.setText("Record")
                 self.record_button.setStyleSheet("")
-            # Инициализация на ONVIF PTZ, след като стриймът е стартиран успешно
-            # Това е добро място за еднократна инициализация на ONVIF
-            # self.current_camera.initialize_onvif()
         else:
             self.single_video_label.setText("Камерата не е намерена.")
+            self.single_video_label.clear()  # Изчистваме предишното съдържание
             self.stop_current_stream()
 
     def stop_current_stream(self):
@@ -2020,16 +1980,19 @@ class LiveViewPage(QWidget):
                 qt_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_BGR888)
 
                 # DEBUGGING PRINTS
-                # print(f"Single View: QLabel size: {self.single_video_label.size().width()}x{self.single_video_label.size().height()}")
-                # print(f"Single View: Original frame size: {w}x{h}")
+                print(
+                    f"Single View: QLabel size: {self.single_video_label.size().width()}x{self.single_video_label.size().height()}")
+                print(f"Single View: Original frame size: {w}x{h}")
 
+                # Мащабиране на QPixmap до размера на QLabel
                 scaled_pixmap = QPixmap.fromImage(qt_image).scaled(
                     self.single_video_label.size(),
-                    Qt.KeepAspectRatio,
+                    Qt.KeepAspectRatio,  # Запазва съотношението
                     Qt.SmoothTransformation
                 )
                 self.single_video_label.setPixmap(scaled_pixmap)
-                # print(f"Single View: Scaled Pixmap size: {scaled_pixmap.size().width()}x{scaled_pixmap.size().height()}")
+                print(
+                    f"Single View: Scaled Pixmap size: {scaled_pixmap.size().width()}x{scaled_pixmap.size().height()}")
 
                 if self.current_camera.status == "Неактивна":
                     self.current_camera.status = "Активна"
@@ -2060,16 +2023,18 @@ class LiveViewPage(QWidget):
                         qt_image = QImage(frame.data, w, h, bytes_per_line, QImage.Format_BGR888)
 
                         # DEBUGGING PRINTS
-                        # print(f"Multi View Slot {i+1}: QLabel size: {self.multi_video_labels[i].size().width()}x{self.multi_video_labels[i].size().height()}")
-                        # print(f"Multi View Slot {i+1}: Original frame size: {w}x{h}")
+                        print(
+                            f"Multi View Slot {i + 1}: QLabel size: {self.multi_video_labels[i].size().width()}x{self.multi_video_labels[i].size().height()}")
+                        print(f"Multi View Slot {i + 1}: Original frame size: {w}x{h}")
 
                         scaled_pixmap = QPixmap.fromImage(qt_image).scaled(
                             self.multi_video_labels[i].size(),
-                            Qt.KeepAspectRatio,
+                            Qt.KeepAspectRatio,  # Запазва съотношението
                             Qt.SmoothTransformation
                         )
                         self.multi_video_labels[i].setPixmap(scaled_pixmap)
-                        # print(f"Multi View Slot {i+1}: Scaled Pixmap size: {scaled_pixmap.size().width()}x{scaled_pixmap.size().height()}")
+                        print(
+                            f"Multi View Slot {i + 1}: Scaled Pixmap size: {scaled_pixmap.size().width()}x{scaled_pixmap.size().height()}")
 
                         if camera_obj.status == "Неактивна":
                             camera_obj.status = "Активна"
@@ -2248,7 +2213,7 @@ class CameraDialog(QDialog):
             return None
 
         try:
-            ip_address(ip_address_str)  # Валидация на IP адрес
+            ip_address(ip_address_str)
         except ValueError:
             QMessageBox.warning(self, "Грешка", "Невалиден IP адрес.")
             return None
@@ -2306,30 +2271,29 @@ class DetectionZoneDialog(QDialog):
         self.image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.image_label.setScaledContents(True)
 
-        latest_frame = self.camera.get_frame()  # Взима последния кадър от камерата
+        latest_frame = self.camera.get_frame()
         if latest_frame is not None:
             h, w, ch = latest_frame.shape
             bytes_per_line = ch * w
             qt_image = QImage(latest_frame.data, w, h, bytes_per_line, QImage.Format_BGR888)
             self.original_pixmap = QPixmap.fromImage(qt_image)
             print(f"DetectionZoneDialog: Loaded frame from camera. Size: {w}x{h}")
-        elif os.path.exists("icons/camera_placeholder.png"):  # Fallback към placeholder, ако има
+        elif os.path.exists("icons/camera_placeholder.png"):
             self.original_pixmap = QPixmap("icons/camera_placeholder.png")
             print("DetectionZoneDialog: Loaded placeholder image.")
-        else:  # Ако няма нито кадър, нито placeholder, създаваме черен образ
+        else:
             img = QImage(640, 480, QImage.Format_RGB32)
             img.fill(Qt.black)
             self.original_pixmap = QPixmap.fromImage(img)
             print("DetectionZoneDialog: Created black placeholder image.")
 
-        self.current_pixmap = self.original_pixmap.copy()  # Копие за рисуване
+        self.current_pixmap = self.original_pixmap.copy()
         self.image_label.setPixmap(self.current_pixmap)
 
         self.drawing = False
         self.start_point = QPoint()
         self.end_point = QPoint()
 
-        # Свързване на събитията на мишката
         self.image_label.mousePressEvent = self.mouse_press
         self.image_label.mouseMoveEvent = self.mouse_move
         self.image_label.mouseReleaseEvent = self.mouse_release
@@ -2348,19 +2312,15 @@ class DetectionZoneDialog(QDialog):
 
         button_layout.addStretch(1)
 
-        ok_button = QPushButton("OK")
-        ok_button.clicked.connect(self.accept)
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
 
-        # Първоначално рисуване на съществуващите зони
         self.draw_existing_zones()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # Прерисувай зоните при промяна на размера на диалога
         self.draw_existing_zones()
 
     def draw_existing_zones(self):
@@ -2369,15 +2329,13 @@ class DetectionZoneDialog(QDialog):
             print("draw_existing_zones: QLabel size is empty or original pixmap is null.")
             return
 
-        # Мащабираме original_pixmap до текущия размер на image_label, запазвайки съотношението
         scaled_original_pixmap = self.original_pixmap.scaled(label_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.current_pixmap = scaled_original_pixmap.copy()
 
         painter = QPainter(self.current_pixmap)
-        painter.setPen(QPen(Qt.red, 2, Qt.SolidLine))  # Цвят за съществуващи зони
+        painter.setPen(QPen(Qt.red, 2, Qt.SolidLine))
         painter.setBrush(Qt.NoBrush)
 
-        # Изчисляваме отместването, ако мащабираната картина не запълва целия лейбъл
         image_rect = scaled_original_pixmap.rect()
         label_rect = self.image_label.rect()
         offset_x = (label_rect.width() - image_rect.width()) / 2
@@ -2386,12 +2344,10 @@ class DetectionZoneDialog(QDialog):
         orig_w, orig_h = self.original_pixmap.width(), self.original_pixmap.height()
         scaled_w, scaled_h = scaled_original_pixmap.width(), scaled_original_pixmap.height()
 
-        # Изчисляваме скалиращи фактори
         scale_factor_x = scaled_w / orig_w if orig_w > 0 else 1
         scale_factor_y = scaled_h / orig_h if orig_h > 0 else 1
 
         for zone in self.camera.detection_zones:
-            # Мащабираме и отместваме координатите на зоните за рисуване
             scaled_x = int(zone.x() * scale_factor_x + offset_x)
             scaled_y = int(zone.y() * scale_factor_y + offset_y)
             scaled_width = int(zone.width() * scale_factor_x)
@@ -2406,7 +2362,6 @@ class DetectionZoneDialog(QDialog):
     def mouse_press(self, event):
         if event.button() == Qt.LeftButton:
             self.drawing = True
-            # Коригираме позицията на мишката спрямо отместването на изображението в QLabel
             label_size = self.image_label.size()
             scaled_original_pixmap = self.original_pixmap.scaled(label_size, Qt.KeepAspectRatio,
                                                                  Qt.SmoothTransformation)
@@ -2447,7 +2402,6 @@ class DetectionZoneDialog(QDialog):
 
             final_end_point = event.pos() - QPoint(offset_x, offset_y)
 
-            # Мащабираме обратно координатите до оригиналния размер на кадъра
             orig_w, orig_h = self.original_pixmap.width(), self.original_pixmap.height()
             scaled_w, scaled_h = scaled_original_pixmap.width(), scaled_original_pixmap.height()
 
@@ -2488,7 +2442,6 @@ class DetectionZoneDialog(QDialog):
         offset_x = (label_rect.width() - image_rect.width()) / 2
         offset_y = (label_rect.height() - image_rect.height()) / 2
 
-        # Рисуваме съществуващите зони (мащабирани и отместени)
         painter.setPen(QPen(Qt.red, 2, Qt.SolidLine))
         painter.setBrush(Qt.NoBrush)
 
@@ -2505,7 +2458,6 @@ class DetectionZoneDialog(QDialog):
             scaled_height = int(zone.height() * scale_factor_y)
             painter.drawRect(scaled_x, scaled_y, scaled_width, scaled_height)
 
-        # Рисуваме текущата зона, която се чертае (с отместване)
         painter.setPen(QPen(Qt.blue, 2, Qt.DotLine))
         rect = QRect(self.start_point + QPoint(offset_x, offset_y),
                      self.end_point + QPoint(offset_x, offset_y)).normalized()
@@ -2641,8 +2593,11 @@ class MainWindow(QMainWindow):
 
         content_layout.addWidget(header_widget)
 
+        # Важно: Уверете се, че content_layout позволява на pages_widget да се разтяга вертикално.
+        # content_layout има единствено pages_widget с stretch factor 1, което е добре.
+        # Може да има проблем, ако други widgets във content_layout имат фиксирани височини.
         self.pages_widget = QStackedWidget()
-        content_layout.addWidget(self.pages_widget, 1)
+        content_layout.addWidget(self.pages_widget, 1)  # pages_widget получава stretch factor 1
 
         self.cameras_page = CamerasPage(self.camera_manager)
         self.cameras_page.add_camera_requested.connect(self.open_add_camera_dialog)
@@ -2668,7 +2623,7 @@ class MainWindow(QMainWindow):
         self.live_view_page = LiveViewPage(self.camera_manager)
         self.pages_widget.addWidget(self.live_view_page)
 
-        main_layout.addLayout(content_layout, 4)
+        main_layout.addLayout(content_layout, 4)  # content_layout получава по-голям stretch factor
 
         self.change_page("Камери")
         self.settings_page.update_manage_users_button_state()
@@ -2863,6 +2818,7 @@ if __name__ == '__main__':
             for name in icon_names:
                 size = (24, 24) if name not in ["arrow_down.png", "camera_placeholder.png"] else (
                     (16, 16) if name == "arrow_down.png" else (640, 480))
+                # Създаване на празна черна икона
                 Image.new('RGB', size, color=(0, 0, 0)).save(f"icons/{name}")
             print("Създадени са placeholder икони.")
         except ImportError:
